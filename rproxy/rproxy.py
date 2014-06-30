@@ -229,6 +229,7 @@ class ProxyHandler(HTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     bufsize = 8192
     timeout = 10
+    ssrealip = None
 
     def handle_one_request(self):
         self._proxylist = None
@@ -287,6 +288,10 @@ class ProxyHandler(HTTPRequestHandler):
         if 'Host' not in self.headers:
             self.headers['Host'] = urlparse.urlparse(self.path).netloc
 
+        if 'ss-realip' in self.headers:  # should exist in first request only
+            self.ssrealip = self.headers['ss-realip']
+        del self.headers['ss-realip']
+
         self.requesthost = parse_hostport(self.headers['Host'], 80)
 
         if self._request_localhost(self.requesthost):
@@ -306,7 +311,7 @@ class ProxyHandler(HTTPRequestHandler):
 
         if conf.xheaders:
             ipl = [ip.strip() for ip in self.headers.get('X-Forwarded-For', '').split(',') if ip.strip()]
-            ipl.append(self.client_address[0])
+            ipl.append(self.ssrealip)
             self.headers['X-Forwarded-For'] = ', '.join(ipl)
 
         self._do_GET()
@@ -1009,7 +1014,7 @@ class Config(object):
 
         self.region = set(x.upper() for x in self.userconf.dget('fgfwproxy', 'region', 'cn').split('|') if x.strip())
 
-        self.xheaders = self.userconf.dgetbool('fgfwproxy', 'xheaders', False)
+        self.xheaders = self.userconf.dgetbool('fgfwproxy', 'xheaders', True)
 
         if self.userconf.dget('fgfwproxy', 'parentproxy', ''):
             self.addparentproxy('direct', '%s 0' % self.userconf.dget('fgfwproxy', 'parentproxy', ''))
