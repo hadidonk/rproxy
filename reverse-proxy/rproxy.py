@@ -24,7 +24,6 @@ __version__ = '4.1.4'
 
 import sys
 import os
-import glob
 
 sys.dont_write_bytecode = True
 WORKINGDIR = '/'.join(os.path.dirname(os.path.abspath(__file__).replace('\\', '/')).split('/')[:-1])
@@ -33,7 +32,6 @@ if ' ' in WORKINGDIR:
     sys.exit(-1)
 os.chdir(WORKINGDIR)
 sys.path.append(os.path.dirname(os.path.abspath(__file__).replace('\\', '/')))
-sys.path += glob.glob('%s/goagent/*.egg' % WORKINGDIR)
 gevent = None
 try:
     import gevent
@@ -55,7 +53,6 @@ import re
 import errno
 import email
 import atexit
-import platform
 import base64
 import ftplib
 import logging
@@ -65,7 +62,6 @@ import shutil
 import socket
 import struct
 import ssl
-import pygeoip
 import traceback
 try:
     from cStringIO import StringIO
@@ -114,9 +110,6 @@ else:
             break
 PYTHON = sys.executable.replace('\\', '/')
 
-HOSTS = defaultdict(list)
-ctimer = []
-CTIMEOUT = 5
 NetWorkIOError = (socket.error, ssl.SSLError, OSError)
 
 
@@ -129,8 +122,8 @@ def prestart():
     if not os.path.isfile('./userconf.ini'):
         shutil.copyfile('./userconf.sample.ini', './userconf.ini')
 
-    if not os.path.isfile('./fgfw-lite/local.txt'):
-        with open('./fgfw-lite/local.txt', 'w') as f:
+    if not os.path.isfile('./reverse-proxy/local.txt'):
+        with open('./reverse-proxy/local.txt', 'w') as f:
             f.write('''
 ! local gfwlist config
 ! rules: https://autoproxy.org/zh-CN/Rules
@@ -746,11 +739,6 @@ class ProxyHandler(HTTPRequestHandler):
             self.end_trunk()
 
 
-class ForceProxyHandler(ProxyHandler):
-    def getparent(self, level=3):
-        return self._getparent(level)
-
-
 class sssocket(object):
     bufsize = 8192
 
@@ -985,35 +973,15 @@ class redirector(object):
 class parent_proxy(object):
     """docstring for parent_proxy"""
     def config(self):
-        self.gfwlist = []
         self.override = []
         self.gfwlist_force = []
         self.temp_rules = set()
         REDIRECTOR.lst = []
 
-        for line in open('./fgfw-lite/local.txt'):
-            self.add_rule(line, force=True)
+        for line in open('./reverse-proxy/local.txt'):
+            self.add_rule(line)
 
-        for line in open('./fgfw-lite/cloud.txt'):
-            self.add_rule(line, force=True)
-
-        if conf.userconf.dgetbool('fgfwproxy', 'gfwlist', True):
-            try:
-                with open('./fgfw-lite/gfwlist.txt') as f:
-                    data = f.read()
-                    if '!' not in data:
-                        data = ''.join(data.split())
-                        if len(data) % 4:
-                            data += '=' * (4 - len(data) % 4)
-                        data = base64.b64decode(data).decode()
-                    for line in data.splitlines():
-                        self.add_rule(line)
-            except TypeError:
-                logging.warning('./fgfw-lite/gfwlist.txt is corrupted!')
-
-        self.geoip = pygeoip.GeoIP('./goagent/GeoIP.dat')
-
-    def add_rule(self, line, force=False):
+    def add_rule(self, line):
         rule = line.strip().split()
         if len(rule) == 2:  # |http://www.google.com/url forcehttps
             try:
@@ -1026,10 +994,7 @@ class parent_proxy(object):
                 o = autoproxy_rule(rule[0])
                 if o.override:
                     self.override.append(o)
-                elif force:
-                    self.gfwlist_force.append(o)
-                else:
-                    self.gfwlist.append(o)
+                self.gfwlist_force.append(o)
             except TypeError as e:
                 logging.debug('create autoproxy rule failed: %s' % e)
         elif rule and '!' not in line:
@@ -1042,18 +1007,6 @@ class parent_proxy(object):
         except socket.error as e:
             logging.warning('resolve %s failed! %s' % (host, repr(e)))
 
-    @lru_cache(256, timeout=120)
-    def ifhost_in_region(self, host, port):
-        try:
-            addr = getaddrinfo(host, port)[0][4][0]
-            code = self.geoip.country_code_by_addr(addr)
-            if code in conf.region:
-                logging.info('%s in %s' % (host, code))
-                return True
-            return False
-        except socket.error:
-            return None
-
     def if_gfwlist_force(self, uri, level):
         if level == 3:
             return True
@@ -1065,13 +1018,6 @@ class parent_proxy(object):
                 logging.info('%s expired' % rule.rule)
                 self.gfwlist_force.remove(rule)
                 self.temp_rules.discard(rule.rule)
-
-    def gfwlist_match(self, uri):
-        for i, rule in enumerate(self.gfwlist):
-            if rule.match(uri):
-                if i > 300:
-                    self.gfwlist.insert(0, self.gfwlist.pop(i))
-                return True
 
     def ifgfwed(self, uri, host, port, level=1):
         if level == 0:
@@ -1086,10 +1032,7 @@ class parent_proxy(object):
         if any(rule.match(uri) for rule in self.override):
             return None
 
-        if not gfwlist_force and (HOSTS.get(host) or self.ifhost_in_region(host, port)):
-            return None
-
-        if gfwlist_force or forceproxy or self.gfwlist_match(uri):
+        if gfwlist_force or forceproxy:
             return True
 
     @lru_cache(256, timeout=120)
@@ -1170,67 +1113,6 @@ def updater():
     while 1:
         time.sleep(30)
         HTTPCONN_POOL.purge()
-        if conf.userconf.dgetbool('FGFW_Lite', 'autoupdate'):
-            lastupdate = conf.version.dgetfloat('Update', 'LastUpdate', 0)
-            if time.time() - lastupdate > conf.UPDATE_INTV * 60 * 60:
-                update(auto=True)
-        global CTIMEOUT, ctimer
-        if ctimer:
-            logging.info('max connection time: %ss in %s' % (max(ctimer), len(ctimer)))
-            CTIMEOUT = min(max(3, max(ctimer) * 5), 15)
-            logging.info('conn timeout set to: %s' % CTIMEOUT)
-            ctimer = []
-
-
-def update(auto=False):
-    conf.version.set('Update', 'LastUpdate', str(time.time()))
-    filelist = [('https://autoproxy-gfwlist.googlecode.com/svn/trunk/gfwlist.txt', './fgfw-lite/gfwlist.txt'), ]
-    for url, path in filelist:
-        etag = conf.version.dget('Update', path.replace('./', '').replace('/', '-'), '')
-        req = urllib2.Request(url)
-        req.add_header('If-None-Match', etag)
-        try:
-            r = urllib2.urlopen(req)
-        except Exception as e:
-            logging.info('%s NOT updated. Reason: %r' % (path, e))
-        else:
-            data = r.read()
-            if r.getcode() == 200 and data:
-                with open(path, 'wb') as localfile:
-                    localfile.write(data)
-                conf.version.set('Update', path.replace('./', '').replace('/', '-'), r.info().getheader('ETag'))
-                conf.confsave()
-                logging.info('%s Updated.' % path)
-            else:
-                logging.info('{} NOT updated. Reason: {}'.format(path, str(r.getcode())))
-    import json
-    branch = conf.userconf.dget('FGFW_Lite', 'branch', 'master')
-    try:
-        r = json.loads(urllib2.urlopen('https://github.com/v3aqb/fgfw-lite/raw/%s/fgfw-lite/update.json' % branch).read())
-    except Exception as e:
-        logging.info('read update.json failed. Reason: %r' % e)
-    else:
-        import hashlib
-        for path, v, in r.items():
-            try:
-                if v == conf.version.dget('Update', path.replace('./', '').replace('/', '-'), ''):
-                    logging.debug('{} Not Modified'.format(path))
-                    continue
-                fdata = urllib2.urlopen('https://github.com/v3aqb/fgfw-lite/raw/%s%s' % (branch, path[1:])).read()
-                h = hashlib.new("sha256", fdata).hexdigest()
-                if h != v:
-                    logging.warning('{} NOT updated. hash mismatch.'.format(path))
-                    continue
-                if not os.path.isdir(os.path.dirname(path)):
-                    os.mkdir(os.path.dirname(path))
-                with open(path, 'wb') as localfile:
-                    localfile.write(fdata)
-                logging.info('%s Updated.' % path)
-                conf.version.set('Update', path.replace('./', '').replace('/', '-'), h)
-            except Exception as e:
-                logging.error('update failed! %r\n%s' % (e, traceback.format_exc()))
-        conf.confsave()
-    restart()
 
 
 def restart():
@@ -1276,184 +1158,6 @@ class FGFWProxyHandler(object):
             pass
         finally:
             self.subpobj = None
-
-
-class goagentHandler(FGFWProxyHandler):
-    """docstring for ClassName"""
-    def config(self):
-        self.cwd = '%s/goagent' % WORKINGDIR
-        self.cmd = '{}/goagent/proxy.bat'.format(WORKINGDIR) if sys.platform.startswith('win') else '{} {}/goagent/proxy.py'.format(PYTHON2, WORKINGDIR)
-        self.enable = conf.userconf.dgetbool('goagent', 'enable', True)
-        with open('%s/goagent/proxy.py' % WORKINGDIR, 'rb') as f:
-            t = f.read()
-        with open('%s/goagent/proxy.py' % WORKINGDIR, 'wb') as f:
-            t = t.replace(b"ctypes.windll.kernel32.SetConsoleTitleW(u'GoAgent v%s' % __version__)", b'pass')
-            f.write(t)
-        if self.enable:
-            self._config()
-
-    def _config(self):
-        goagent = SConfigParser()
-        goagent.read('./goagent/proxy.sample.ini')
-
-        if conf.userconf.dget('goagent', 'gaeappid', 'goagent') != 'goagent':
-            goagent.set('gae', 'appid', conf.userconf.dget('goagent', 'gaeappid', 'goagent'))
-            goagent.set("gae", "password", conf.userconf.dget('goagent', 'gaepassword', ''))
-        else:
-            logging.warning('GoAgent APPID is NOT set! Fake APPID is used.')
-            goagent.set('gae', 'appid', 'dummy')
-        goagent.set('gae', 'profile', conf.userconf.dget('goagent', 'profile', 'ipv4'))
-        goagent.set('gae', 'mode', conf.userconf.dget('goagent', 'mode', 'https'))
-        goagent.set('gae', 'obfuscate', conf.userconf.dget('goagent', 'obfuscate', '0'))
-        goagent.set('gae', 'validate', conf.userconf.dget('goagent', 'validate', '1'))
-        goagent.set('gae', 'options', conf.userconf.dget('goagent', 'options', ''))
-        goagent.set('gae', 'keepalive', conf.userconf.dget('goagent', 'keepalive', '0'))
-        goagent.set('gae', 'sslversion', conf.userconf.dget('goagent', 'options', 'TLSv1'))
-        if conf.userconf.dget('goagent', 'google_cn', ''):
-            goagent.set('iplist', 'google_cn', conf.userconf.dget('goagent', 'google_cn', ''))
-        if conf.userconf.dget('goagent', 'google_hk', ''):
-            goagent.set('iplist', 'google_hk', conf.userconf.dget('goagent', 'google_hk', ''))
-        conf.addparentproxy('goagent', 'http://127.0.0.1:8087 20')
-
-        if conf.userconf.dget('goagent', 'phpfetchserver'):
-            goagent.set('php', 'enable', '1')
-            goagent.set('php', 'password', conf.userconf.dget('goagent', 'phppassword', '123456'))
-            goagent.set('php', 'fetchserver', conf.userconf.dget('goagent', 'phpfetchserver', 'http://.com/'))
-            conf.addparentproxy('goagent-php', 'http://127.0.0.1:8088')
-        else:
-            goagent.set('php', 'enable', '0')
-
-        goagent.set('pac', 'enable', '0')
-
-        goagent.set('proxy', 'autodetect', '0')
-        if conf.parentdict.get('direct')[0].startswith('http://'):
-            p = urlparse.urlparse(conf.parentdict.get('direct')[0])
-            goagent.set('proxy', 'enable', '1')
-            goagent.set('proxy', 'host', p.hostname)
-            goagent.set('proxy', 'port', p.port)
-            goagent.set('proxy', 'username', p.username or '')
-            goagent.set('proxy', 'password', p.password or '')
-        if '-hide' in sys.argv[1:]:
-            goagent.set('listen', 'visible', '0')
-        else:
-            goagent.set('listen', 'visible', '1')
-
-        with open('./goagent/proxy.ini', 'w') as configfile:
-            goagent.write(configfile)
-
-        conf.FAKEHTTPS = tuple([k for k in goagent.dget('ipv4/http', 'fakehttps').split('|') if not k.startswith('.')])
-        conf.FAKEHTTPS_POSTFIX = tuple([k for k in goagent.dget('ipv4/http', 'fakehttps').split('|') if k.startswith('.')])
-        conf.WITHGAE = set(goagent.dget('ipv4/http', 'withgae').split('|'))
-        conf.HOST = tuple()
-        conf.HOST_POSTFIX = tuple([k for k, v in goagent.items('ipv4/hosts') if '\\' not in k and ':' not in k and k.startswith('.')])
-
-        if not os.path.isfile('./goagent/CA.crt'):
-            self.createCA()
-
-    def createCA(self):
-        '''
-        ripped from goagent 2.1.14 with modification
-        '''
-        import OpenSSL
-        key = OpenSSL.crypto.PKey()
-        key.generate_key(OpenSSL.crypto.TYPE_RSA, 2048)
-        ca = OpenSSL.crypto.X509()
-        ca.set_serial_number(0)
-        ca.set_version(2)
-        subj = ca.get_subject()
-        subj.countryName = 'CN'
-        subj.stateOrProvinceName = 'Internet'
-        subj.localityName = 'Cernet'
-        subj.organizationName = 'GoAgent'
-        subj.organizationalUnitName = 'GoAgent Root'
-        subj.commonName = 'GoAgent CA'
-        ca.gmtime_adj_notBefore(0)
-        ca.gmtime_adj_notAfter(24 * 60 * 60 * 3652)
-        ca.set_issuer(ca.get_subject())
-        ca.set_pubkey(key)
-        ca.add_extensions([
-            OpenSSL.crypto.X509Extension(b'basicConstraints', True, b'CA:TRUE'),
-            OpenSSL.crypto.X509Extension(b'keyUsage', False, b'keyCertSign, cRLSign'),
-            OpenSSL.crypto.X509Extension(b'subjectKeyIdentifier', False, b'hash', subject=ca), ])
-        ca.sign(key, 'sha1')
-        with open('./goagent/CA.crt', 'wb') as fp:
-            fp.write(OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, ca))
-            fp.write(OpenSSL.crypto.dump_privatekey(OpenSSL.crypto.FILETYPE_PEM, key))
-        import shutil
-        if os.path.isdir('./goagent/certs'):
-            shutil.rmtree('./goagent/certs')
-        self.import_ca()
-
-    def import_ca(self):
-        '''
-        ripped from goagent 3.1.0
-        '''
-        certfile = os.path.abspath('./goagent/CA.crt')
-        dirname, basename = os.path.split(certfile)
-        commonname = 'GoAgent CA'
-        if sys.platform.startswith('win'):
-            import ctypes
-            with open(certfile, 'rb') as fp:
-                certdata = fp.read()
-                if certdata.startswith(b'-----'):
-                    begin = b'-----BEGIN CERTIFICATE-----'
-                    end = b'-----END CERTIFICATE-----'
-                    certdata = base64.b64decode(b''.join(certdata[certdata.find(begin) + len(begin):certdata.find(end)].strip().splitlines()))
-                crypt32 = ctypes.WinDLL(b'crypt32.dll'.decode())
-                store_handle = crypt32.CertOpenStore(10, 0, 0, 0x4000 | 0x10000, b'ROOT'.decode())
-                if not store_handle:
-                    return -1
-                ret = crypt32.CertAddEncodedCertificateToStore(store_handle, 0x1, certdata, len(certdata), 4, None)
-                crypt32.CertCloseStore(store_handle, 0)
-                del crypt32
-                return 0 if ret else -1
-        elif sys.platform == 'darwin':
-            return os.system(('security find-certificate -a -c "%s" | grep "%s" >/dev/null || security add-trusted-cert -d -r trustRoot -k "/Library/Keychains/System.keychain" "%s"' % (commonname, commonname, certfile.decode('utf-8'))).encode('utf-8'))
-        elif sys.platform.startswith('linux'):
-            platform_distname = platform.dist()[0]
-            if platform_distname == 'Ubuntu':
-                pemfile = "/etc/ssl/certs/%s.pem" % commonname
-                new_certfile = "/usr/local/share/ca-certificates/%s.crt" % commonname
-                if not os.path.exists(pemfile):
-                    return os.system('cp "%s" "%s" && update-ca-certificates' % (certfile, new_certfile))
-            elif any(os.path.isfile('%s/certutil' % x) for x in os.environ['PATH'].split(os.pathsep)):
-                return os.system('certutil -L -d sql:$HOME/.pki/nssdb | grep "%s" || certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n "%s" -i "%s"' % (commonname, commonname, certfile))
-            else:
-                logging.warning('please install *libnss3-tools* package to import GoAgent root ca')
-        return 0
-
-
-class snovaHandler(FGFWProxyHandler):
-    """docstring for ClassName"""
-    def config(self):
-        self.cmd = '%s/snova/bin/start.%s' % (WORKINGDIR, 'bat' if sys.platform.startswith('win') else 'sh')
-        self.cwd = '%s/snova' % WORKINGDIR
-        self.enable = conf.userconf.dgetbool('snova', 'enable', False)
-        self.enableupdate = False
-        if self.enable:
-            self._config()
-
-    def _config(self):
-        proxy = SConfigParser()
-        proxy.optionxform = str
-        proxy.read('./snova/conf/snova.conf')
-
-        proxy.set('GAE', 'Enable', '0')
-
-        worknodes = conf.userconf.dget('snova', 'C4worknodes')
-        if worknodes:
-            worknodes = worknodes.split('|')
-            for i, v in enumerate(worknodes):
-                proxy.set('C4', 'WorkerNode[%s]' % i, v)
-            proxy.set('C4', 'Enable', '1')
-            conf.addparentproxy('snova-c4', 'http://127.0.0.1:48102')
-        else:
-            proxy.set('C4', 'Enable', '0')
-
-        proxy.set('SPAC', 'Enable', '0')
-        proxy.set('Misc', 'RC4Key', conf.userconf.dget('snova', 'RC4Key', '8976501f8451f03c5c4067b47882f2e5'))
-        with open('./snova/conf/snova.conf', 'w') as configfile:
-            proxy.write(configfile)
 
 
 class SConfigParser(configparser.ConfigParser):
@@ -1527,21 +1231,6 @@ class Config(object):
 
         self.maxretry = self.userconf.dgetint('fgfwproxy', 'maxretry', 4)
 
-        for host, ip in self.userconf.items('hosts'):
-            if ip not in HOSTS.get(host, []):
-                HOSTS[host].append(ip)
-
-        if os.path.isfile('./fgfw-lite/hosts'):
-            for line in open('./fgfw-lite/hosts'):
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    try:
-                        ip, host = line.split()
-                        if ip not in HOSTS.get(host, []):
-                            HOSTS[host].append(ip)
-                    except Exception as e:
-                        logging.warning('%s %s' % (e, line))
-
     def reload(self):
         self.version.read('version.ini')
         self.userconf.read('userconf.ini')
@@ -1585,15 +1274,11 @@ def main():
         ctypes.windll.kernel32.SetConsoleTitleW(u'FGFW-Lite v%s' % __version__)
     for k, v in conf.userconf.items('parents'):
         conf.addparentproxy(k, v)
-    goagentHandler()
-    snovaHandler()
     updatedaemon = Thread(target=updater)
     updatedaemon.daemon = True
     updatedaemon.start()
     server = ThreadingHTTPServer(conf.listen, ProxyHandler)
-    Thread(target=server.serve_forever).start()
-    server2 = ThreadingHTTPServer((conf.listen[0], conf.listen[1] + 1), ForceProxyHandler)
-    server2.serve_forever()
+    server.serve_forever()
 
 if __name__ == "__main__":
     try:
