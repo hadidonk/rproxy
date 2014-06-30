@@ -1,0 +1,11 @@
+/shadowsocks/config.json
+/cow/
+/snova/
+/fgfw-lite/local.txt
+/fgfw-lite/redirector.txt
+/goagent-logo.png
+/goagent/*
+/.directory
+/userconf.ini
+*.py[cod]
+/Python27/*

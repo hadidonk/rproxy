@@ -1,0 +1,41 @@
+2014.6.21 v4.1.4
+new connection pool design
+performance improvement
+
+2014.6.16 v4.1.3
+new method to add temp rules
+lots of improvement with shadowsocks
+caching DNS result
+enable goagent validate by default
+add max retry parameter(default by 4)
+enhancement in logging
+
+2014.6.10 v4.1.2:
+fix FTP listing problem
+fix missing response when response size at 100kB
+fix 403 error on ku6 video serve
+simple anti replay attrack on shadowsocks
+performance improvement
+other bug fix and improvements
+
+2014.5.27 v4.1.1:
+support lan with parent proxy
+some bug fix
+
+2014.5.14 v4.1.0:
+support HTTP keep-alive
+support FTP LIST
+fix chrash when non ascii char in request uri and headers
+add switch to gfwlist
+python 3 compatable
+cache shadowsocks encryption keys
+able to select a branch for auto update
+disable goagent auto proxy detect
+add default goagent appid
+support http proxy basic auth
+shadowsocks now support http parent proxy
+
+2014.4.12 v4.0.0
+move to gevent
+support FTP RETR
+

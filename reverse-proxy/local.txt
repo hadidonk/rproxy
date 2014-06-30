@@ -1,0 +1,8 @@
+||bits.wikimedia.org
+! /^http://www.baidu.com/.*wd=([^&]*).*$/ /https://www.google.com/search?q=\1&ie=gb2312/
+/^http://www.bt-chat.com/details.php\?id=(.+)$/ /http://www.bt-chat.com/download.php?id=\1/
+||weibo.com direct
+||sinaimg.cn direct
+|http://www.v2ex.com/ forcehttps
+||android.com ss0
+bdimg.com
