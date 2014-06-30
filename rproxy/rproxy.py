@@ -217,12 +217,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_header('ProxyServer', self.version_string())
         self.send_header('Date', self.date_time_string())
 
-    def send_trunk(self, data):
-        self.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
-
-    def end_trunk(self):
-        self.wfile.write(b'0\r\n\r\n')
-
     def _request_localhost(self, req):
         try:
             return ip_address(getaddrinfo(req[0], req[1])[0][4][0]).is_loopback
