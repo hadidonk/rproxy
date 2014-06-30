@@ -35,10 +35,7 @@ try:
     random_string = M2Crypto.Rand.rand_bytes
 except ImportError:
     random_string = os.urandom
-    try:
-        from streamcipher import StreamCipher as Cipher
-    except ImportError:
-        Cipher = None
+    Cipher = None
 
 
 def get_table(key):

@@ -1,7 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.7
 #-*- coding: UTF-8 -*-
 #
-# FGFW_Lite.py A Proxy Server help go around the Great Firewall
+# rproxy.py A Reverse Proxy Server work with shadowsocks
 #
 # Copyright (C) 2012-2014 Jiang Chao <sgzz.cj@gmail.com>
 #
@@ -20,7 +20,7 @@
 
 from __future__ import print_function, unicode_literals, division
 
-__version__ = '4.1.4'
+__version__ = '1.0'
 
 import sys
 import os
@@ -52,9 +52,7 @@ import time
 import re
 import errno
 import email
-import atexit
 import base64
-import ftplib
 import logging
 import random
 import select
@@ -62,7 +60,6 @@ import shutil
 import socket
 import struct
 import ssl
-import traceback
 try:
     from cStringIO import StringIO
 except ImportError:
@@ -74,11 +71,6 @@ from threading import Thread
 from repoze.lru import lru_cache
 import encrypt
 from util import create_connection, getaddrinfo, parse_hostport, is_connection_dropped
-try:
-    import markdown
-except ImportError:
-    markdown = None
-    sys.stderr.write('Warning: python-Markdown is NOT installed!\n')
 try:
     import configparser
     import urllib.request as urllib2
@@ -98,7 +90,7 @@ except ImportError:
 configparser.RawConfigParser.OPTCRE = re.compile(r'(?P<option>[^=\s][^=]*)\s*(?P<vi>[=])\s*(?P<value>.*)$')
 
 logging.basicConfig(level=logging.INFO,
-                    format='FGFW-Lite %(asctime)s %(levelname)s %(message)s',
+                    format='rproxy %(asctime)s %(levelname)s %(message)s',
                     datefmt='%H:%M:%S', filemode='a+')
 
 if sys.platform.startswith('win'):
@@ -114,7 +106,7 @@ NetWorkIOError = (socket.error, ssl.SSLError, OSError)
 
 
 def prestart():
-    s = 'FGFW_Lite ' + __version__
+    s = 'rproxy ' + __version__
     if gevent:
         s += ' with gevent %s' % gevent.__version__
     logging.info(s)
@@ -122,8 +114,8 @@ def prestart():
     if not os.path.isfile('./userconf.ini'):
         shutil.copyfile('./userconf.sample.ini', './userconf.ini')
 
-    if not os.path.isfile('./reverse-proxy/local.txt'):
-        with open('./reverse-proxy/local.txt', 'w') as f:
+    if not os.path.isfile('./rproxy/local.txt'):
+        with open('./rproxy/local.txt', 'w') as f:
             f.write('''
 ! local gfwlist config
 ! rules: https://autoproxy.org/zh-CN/Rules
@@ -239,7 +231,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
 
 
 class ProxyHandler(HTTPRequestHandler):
-    server_version = "FGFW-Lite/" + __version__
+    server_version = "rproxy/" + __version__
     protocol_version = "HTTP/1.1"
     bufsize = 8192
     timeout = 10
@@ -281,7 +273,7 @@ class ProxyHandler(HTTPRequestHandler):
         if isinstance(self.path, bytes):
             self.path = self.path.decode('latin1')
         if self.path.lower().startswith('ftp://'):
-            return self.do_FTP()
+            return self.send_error(504)
         # transparent proxy
         if self.path.startswith('/') and 'Host' in self.headers:
             self.path = 'http://%s%s' % (self.headers['Host'], self.path)
@@ -492,89 +484,6 @@ class ProxyHandler(HTTPRequestHandler):
 
     do_POST = do_DELETE = do_TRACE = do_HEAD = do_PUT = do_GET
 
-    def do_CONNECT(self):
-        self.close_connection = 1
-        host, _, port = self.path.partition(':')
-        self.requesthost = (host, int(port))
-        if isinstance(self.path, bytes):
-            self.path = self.path.decode('latin1')
-        if self._request_localhost(self.requesthost):
-            if (ip_address(self.client_address[0]).is_loopback and self.requesthost[1] in (conf.listen[1], conf.listen[1] + 1)) or\
-                    not ip_address(self.client_address[0]).is_loopback:
-                return self.send_error(403)
-        if 'Host' not in self.headers:
-            self.headers['Host'] = self.path
-        self.wfile.write(self.protocol_version.encode() + b" 200 Connection established\r\n\r\n")
-        self._do_CONNECT()
-
-    def _do_CONNECT(self, retry=False):
-        if retry:
-            self.failed_parents.append(self.ppname)
-        if self.remotesoc:
-            self.remotesoc.close()
-        if not self.retryable or self.getparent():
-            PARENT_PROXY.notify(self.command, self.path, self.path, False, self.failed_parents, self.ppname)
-            return
-        try:
-            self.remotesoc = self._connect_via_proxy(self.requesthost)
-            self.remotesoc.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        except NetWorkIOError as e:
-            logging.warning('%s %s via %s failed on connection! %r' % (self.command, self.path, self.ppname, e))
-            return self._do_CONNECT(True)
-
-        if self.pproxy.startswith('http'):
-            s = ['%s %s %s\r\n' % (self.command, self.path, self.request_version), ]
-            if self.pproxyparse.username:
-                a = '%s:%s' % (self.pproxyparse.username, self.pproxyparse.password)
-                self.headers['Proxy-Authorization'] = 'Basic %s' % base64.b64encode(a.encode())
-            s.append('\r\n'.join(['%s: %s' % (key, value) for key, value in self.headers.items()]))
-            s.append('\r\n\r\n')
-            self.remotesoc.sendall(''.join(s).encode())
-            remoterfile = self.remotesoc.makefile('rb', 0)
-            data = remoterfile.readline()
-            if b'200' not in data:
-                logging.warning('{} {} failed! 200 not in response'.format(self.command, self.path))
-                return self._do_CONNECT(True)
-            while not data in (b'\r\n', b'\n', b''):
-                data = remoterfile.readline()
-        if self.rbuffer:
-            logging.debug('remote write rbuffer')
-            self.remotesoc.sendall(b''.join(self.rbuffer))
-        while 1:
-            try:
-                (ins, _, _) = select.select([self.connection, self.remotesoc], [], [], 5)
-                if not ins:
-                    break
-                if self.connection in ins:
-                    logging.debug('read from client')
-                    data = self.connection.recv(self.bufsize)
-                    if not data:
-                        return
-                    self.rbuffer.append(data)
-                    self.remotesoc.sendall(data)
-                if self.remotesoc in ins:
-                    logging.debug('read from remote')
-                    data = self.remotesoc.recv(self.bufsize)
-                    if not data:
-                        logging.debug('not data')
-                        break
-                    self.wfile.write(data)
-                    logging.debug('self.retryable = False')
-                    self.retryable = False
-                    break
-            except socket.error as e:
-                logging.warning('socket error: %r' % e)
-                sys.stderr.write(traceback.format_exc())
-                break
-        if self.retryable:
-            self.remotesoc.close()
-            logging.warning('{} {} via {} failed! read timed out'.format(self.command, self.path, self.ppname))
-            return self._do_CONNECT(True)
-        PARENT_PROXY.notify(self.command, self.path, self.requesthost, True, self.failed_parents, self.ppname)
-        self._read_write(self.remotesoc, 300)
-        self.remotesoc.close()
-        self.connection.close()
-
     def wfile_write(self, data=None):
         if data is None:
             self.retryable = False
@@ -665,78 +574,6 @@ class ProxyHandler(HTTPRequestHandler):
             except socket.error as e:
                 logging.debug('socket error: %s' % e)
                 break
-
-    def do_FTP(self):
-        logging.info('{} {}'.format(self.command, self.path))
-        # fish out user and password information
-        p = urlparse.urlparse(self.path, 'http')
-        user, passwd = p.username or "anonymous", p.password or None
-        if self.command == "GET":
-            if p.path.endswith('/'):
-                return self.do_FTP_LIST(p.netloc, p.path, user, passwd)
-            else:
-                try:
-                    ftp = ftplib.FTP(p.netloc)
-                    ftp.login(user, passwd)
-                    lst = []
-                    response = ftp.retrlines("LIST %s" % p.path, lst.append)
-                    if not lst:
-                        return self.send_error(504, response)
-                    if len(lst) != 1 or lst[0].startswith('d'):
-                        return self.redirect('%s/' % self.path)
-                    self.send_response(200)
-                    self.send_header('Content-Length', lst[0].split()[4])
-                    self.send_header('Connection', 'keep_alive')
-                    self.end_headers()
-                    ftp.retrbinary("RETR %s" % p.path, self.wfile.write, self.bufsize)
-                    ftp.quit()
-                except Exception as e:  # Possibly no such file
-                    logging.warning("FTP Exception: %r" % e)
-                    self.send_error(504, repr(e))
-        else:
-            self.send_error(501)
-
-    def sizeof_fmt(self, num):
-        if num < 1024:
-            return "%dB" % num
-        for x in ['B', 'KB', 'MB', 'GB']:
-            if num < 1024.0:
-                return "%.1f%s" % (num, x)
-            num /= 1024.0
-        return "%.1f%s" % (num, 'TB')
-
-    def do_FTP_LIST(self, netloc, path, user, passwd):
-        if not path.endswith('/'):
-            self.path += '/'
-        lst = []
-        md = '|Content|Size|Modify|\r\n|:----|----:|----:|\r\n'
-        try:
-            ftp = ftplib.FTP(netloc)
-            ftp.login(user, passwd)
-            response = ftp.retrlines("LIST %s" % path, lst.append)
-            ftp.quit()
-            for line in lst:
-                line_split = line.split()
-                if line.startswith('d'):
-                    line_split[8] += '/'
-                md += '|[%s](%s%s)|%s|%s %s %s|\r\n' % (line_split[8], self.path, line_split[8], line_split[4] if line.startswith('d') else self.sizeof_fmt(int(line_split[4])), line_split[5], line_split[6], line_split[7])
-            md += '|================|==========|=============|\r\n'
-            md += '\r\n%s\r\n' % response
-        except Exception as e:
-            logging.warning("FTP Exception: %r" % e)
-            self.send_error(504, repr(e))
-        else:
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.send_header('Transfer-Encoding', 'chunked')
-            self.send_header('Connection', 'keep_alive')
-            self.end_headers()
-            self.send_trunk('<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">')
-            self.send_trunk("<html>\n<title>Directory listing for %s</title>\n" % path)
-            self.send_trunk("<body>\n<h2>Directory listing for %s</h2>\n<hr>\n" % path)
-            self.send_trunk(markdown.markdown(md, extensions=['tables', ]))
-            self.send_trunk("<hr>\n</body>\n</html>\n")
-            self.end_trunk()
 
 
 class sssocket(object):
@@ -978,7 +815,7 @@ class parent_proxy(object):
         self.temp_rules = set()
         REDIRECTOR.lst = []
 
-        for line in open('./reverse-proxy/local.txt'):
+        for line in open('./rproxy/local.txt'):
             self.add_rule(line)
 
     def add_rule(self, line):
@@ -1115,51 +952,6 @@ def updater():
         HTTPCONN_POOL.purge()
 
 
-def restart():
-    conf.confsave()
-    for item in FGFWProxyHandler.ITEMS:
-        item.restart()
-    PARENT_PROXY.config()
-
-
-class FGFWProxyHandler(object):
-    """docstring for FGFWProxyHandler"""
-    ITEMS = []
-
-    def __init__(self):
-        FGFWProxyHandler.ITEMS.append(self)
-        self.subpobj = None
-        self.cmd = ''
-        self.cwd = ''
-        self.filelist = []
-        self.enable = True
-        self.start()
-
-    def config(self):
-        pass
-
-    def start(self):
-        try:
-            self.config()
-            if self.enable:
-                logging.info('starting %s' % self.cmd)
-                self.subpobj = subprocess.Popen(shlex.split(self.cmd), cwd=self.cwd, stdin=subprocess.PIPE)
-        except Exception:
-            sys.stderr.write(traceback.format_exc() + '\n')
-
-    def restart(self):
-        self.stop()
-        self.start()
-
-    def stop(self):
-        try:
-            self.subpobj.terminate()
-        except:
-            pass
-        finally:
-            self.subpobj = None
-
-
 class SConfigParser(configparser.ConfigParser):
     """docstring for SSafeConfigParser"""
     optionxform = str
@@ -1232,12 +1024,6 @@ class Config(object):
         self.maxretry = self.userconf.dgetint('fgfwproxy', 'maxretry', 4)
 
     def reload(self):
-        self.version.read('version.ini')
-        self.userconf.read('userconf.ini')
-
-    def confsave(self):
-        with open('version.ini', 'w') as f:
-            self.version.write(f)
         self.userconf.read('userconf.ini')
 
     def addparentproxy(self, name, proxy):
@@ -1262,16 +1048,10 @@ conf = Config()
 PARENT_PROXY.config()
 
 
-@atexit.register
-def atexit_do():
-    for item in FGFWProxyHandler.ITEMS:
-        item.stop()
-
-
 def main():
     if os.name == 'nt':
         import ctypes
-        ctypes.windll.kernel32.SetConsoleTitleW(u'FGFW-Lite v%s' % __version__)
+        ctypes.windll.kernel32.SetConsoleTitleW(u'rproxy v%s' % __version__)
     for k, v in conf.userconf.items('parents'):
         conf.addparentproxy(k, v)
     updatedaemon = Thread(target=updater)
