@@ -230,6 +230,7 @@ class ProxyHandler(HTTPRequestHandler):
     bufsize = 8192
     timeout = 10
     ssrealip = None
+    ssclient = ''
 
     def handle_one_request(self):
         self._proxylist = None
@@ -291,6 +292,10 @@ class ProxyHandler(HTTPRequestHandler):
         if 'ss-realip' in self.headers:  # should exist in first request only
             self.ssrealip = self.headers['ss-realip']
         del self.headers['ss-realip']
+
+        if 'ss-client' in self.headers:  # should exist in first request only
+            self.ssclient = self.headers['ss-client']
+        del self.headers['ss-client']
 
         self.requesthost = parse_hostport(self.headers['Host'], 80)
 
@@ -504,13 +509,13 @@ class ProxyHandler(HTTPRequestHandler):
             if res:
                 self._proxylist.insert(0, self.ppname)
                 sock, self.ppname = res
-                logging.info('{} {} via {}'.format(self.command, self.shortpath, self.ppname))
+                logging.info('{} {} via {} client: {}'.format(self.command, self.shortpath, self.ppname, self.ssclient))
                 return sock
         return self._connect_via_proxy(netloc)
 
     def _connect_via_proxy(self, netloc):
         timeout = None if self._proxylist else 20
-        logging.info('{} {} via {}'.format(self.command, self.shortpath or self.path, self.ppname))
+        logging.info('{} {} via {} client: {}'.format(self.command, self.shortpath or self.path, self.ppname, self.ssclient))
         if not self.pproxy:
             return create_connection(netloc, timeout or 5)
         elif self.pproxy.startswith('http://'):
