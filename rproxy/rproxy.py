@@ -876,23 +876,6 @@ class parent_proxy(object):
         if gfwlist_force or forceproxy:
             return True
 
-    @lru_cache(256, timeout=120)
-    def no_goagent(self, uri, host):
-        s = set(conf.parentdict.keys()) - set(['goagent', 'goagent-php', 'direct', 'local'])
-        a = conf.userconf.dget('goagent', 'gaeappid', 'goagent') == 'goagent'
-        if s or a:  # two reasons not to use goagent
-            if host in conf.FAKEHTTPS:
-                return True
-            if host.endswith(conf.FAKEHTTPS_POSTFIX):
-                return True
-            if host in conf.WITHGAE:
-                return True
-            if host in conf.HOST:
-                return False
-            if host.endswith(conf.HOST_POSTFIX):
-                return False
-            return True
-
     def parentproxy(self, uri, host, command, level=1):
         '''
             decide which parentproxy to use.
@@ -914,15 +897,6 @@ class parent_proxy(object):
         parentlist = list(conf.parentdict.keys())
         random.shuffle(parentlist)
         parentlist = sorted(parentlist, key=lambda item: conf.parentdict[item][1])
-
-        if command == 'CONNECT' and 'goagent' in parentlist and self.no_goagent(uri, host):
-            logging.debug('skip goagent')
-            if 'goagent' in parentlist:
-                parentlist.remove('goagent')
-                parentlist.append('goagent')
-            if 'goagent-php' in parentlist:
-                parentlist.remove('goagent-php')
-                parentlist.append('goagent-php')
 
         if 'local' in parentlist:
             parentlist.remove('local')
