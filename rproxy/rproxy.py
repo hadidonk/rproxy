@@ -985,21 +985,21 @@ class Config(object):
         self.HOST = tuple()
         self.HOST_POSTFIX = tuple()
         self.CONN_POSTFIX = tuple()
-        listen = self.userconf.dget('fgfwproxy', 'listen', '8118')
+        listen = self.userconf.dget('rproxy', 'listen', '8118')
         if listen.isdigit():
             self.listen = ('127.0.0.1', int(listen))
         else:
             self.listen = (listen.rsplit(':', 1)[0], int(listen.rsplit(':', 1)[1]))
 
-        self.region = set(x.upper() for x in self.userconf.dget('fgfwproxy', 'region', 'cn').split('|') if x.strip())
+        self.region = set(x.upper() for x in self.userconf.dget('rproxy', 'region', 'cn').split('|') if x.strip())
 
-        self.xheaders = self.userconf.dgetbool('fgfwproxy', 'xheaders', True)
+        self.xheaders = self.userconf.dgetbool('rproxy', 'xheaders', True)
 
-        if self.userconf.dget('fgfwproxy', 'parentproxy', ''):
-            self.addparentproxy('direct', '%s 0' % self.userconf.dget('fgfwproxy', 'parentproxy', ''))
+        if self.userconf.dget('rproxy', 'parentproxy', ''):
+            self.addparentproxy('direct', '%s 0' % self.userconf.dget('rproxy', 'parentproxy', ''))
             self.addparentproxy('local', 'direct 100')
 
-        self.maxretry = self.userconf.dgetint('fgfwproxy', 'maxretry', 4)
+        self.maxretry = self.userconf.dgetint('rproxy', 'maxretry', 4)
 
     def reload(self):
         self.userconf.read('userconf.ini')
