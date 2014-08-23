@@ -1,1 +1,14 @@
 /announce 403
+||darpa.mil noxff
+||fxnetworks.com noxff
+hulu.com noxff
+huluim.com noxff
+||muzu.tv noxff
+||netflix.com noxff
+||pandora.com noxff
+.pandora.tv noxff
+||spotify.com noxff
+||target.com noxff
+||vevo.com noxff
+||zattoo.com noxff
+||qq.co.za noxff

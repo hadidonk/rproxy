@@ -266,6 +266,7 @@ class ProxyHandler(HTTPRequestHandler):
         return self._getparent(level)
 
     def do_GET(self):
+        noxff = False
         if isinstance(self.path, bytes):
             self.path = self.path.decode('latin1')
         if self.path.lower().startswith('ftp://'):
@@ -283,6 +284,8 @@ class ProxyHandler(HTTPRequestHandler):
                 return self.send_error(int(new_url))
             elif new_url in conf.parentdict.keys():
                 self._proxylist = [new_url]
+            elif new_url.lower() == 'noxff':
+                noxff = True
             else:
                 return self.redirect(new_url)
 
@@ -318,6 +321,8 @@ class ProxyHandler(HTTPRequestHandler):
             ipl = [ip.strip() for ip in self.headers.get('X-Forwarded-For', '').split(',') if ip.strip()]
             ipl.append(self.ssrealip)
             self.headers['X-Forwarded-For'] = ', '.join(ipl)
+        if noxff:
+            del self.headers['X-Forwarded-For']
 
         self._do_GET()
 
@@ -748,10 +753,11 @@ class ExpiredError(Exception):
 
 
 class autoproxy_rule(object):
-    def __init__(self, arg, expire=None):
+    def __init__(self, arg, expire=None, logger=logging):
         super(autoproxy_rule, self).__init__()
         self.rule = arg.strip()
-        logging.debug('parsing autoproxy rule: %r' % self.rule)
+        self.logger = logger
+        self.logger.debug('parsing autoproxy rule: %r' % self.rule)
         if len(self.rule) < 3 or self.rule.startswith(('!', '[')) or '#' in self.rule:
             raise TypeError("invalid autoproxy_rule: %s" % self.rule)
         self.expire = expire
@@ -773,7 +779,7 @@ class autoproxy_rule(object):
                 regex = rule.replace('.', r'\.').replace('?', r'\?').replace('*', '.*').replace('^', r'[^\w%._-]')
                 regex = re.sub(r'^\|', r'^', regex)
                 regex = re.sub(r'\|$', r'$', regex)
-                if not rule.startswith('|'):
+                if not rule.startswith(('|', 'http://')):
                     regex = re.sub(r'^', r'^http://.*', regex)
                 return re.compile(regex)
 
